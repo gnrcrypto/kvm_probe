@@ -46,16 +46,9 @@ struct kvm_kernel_mem_write {
 
 // VA scan structure
 #define IOCTL_SCAN_VA           0x1010
+#define IOCTL_HYPERCALL_ARGS 0x1012
 struct va_scan_data {
     unsigned long va;
-
-struct hypercall_args {
-    unsigned long nr;
-    unsigned long arg0;
-    unsigned long arg1;
-    unsigned long arg2;
-    unsigned long arg3;
-};
     unsigned long size;
     unsigned char *user_buffer;
 };
@@ -533,22 +526,7 @@ int main(int argc, char *argv[]) {
                    strtoul(argv[2], NULL, 16), phys);
         }
 
-    
-    } else if (strcmp(cmd, "triggerflag") == 0) {
-        if (argc != 2) {
-            print_usage(argv[0]);
-            close(fd);
-            return 1;
-        }
-        struct hypercall_args args = {
-            .nr = 100, .arg0 = 0, .arg1 = 0, .arg2 = 0, .arg3 = 0
-        };
-        if (ioctl(fd, IOCTL_HYPERCALL_ARGS, &args) < 0) {
-            perror("ioctl IOCTL_HYPERCALL_ARGS (triggerflag) failed");
-        } else {
-            printf("Hypercall #100 sent to retrieve flag.\n");
-        }
-} else {
+    } else {
         fprintf(stderr, "Unknown command: %s\n", cmd);
         print_usage(argv[0]);
     }
