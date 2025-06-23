@@ -72,6 +72,7 @@ make clean
 make all
 make install
 cp kvm_prober /usr/bin
+insmod *.ko
 kvm_prober allocvqpage
 
 echo -e "\n\033[1;36m[*] Ensuring environment is ready...\033[0m"
