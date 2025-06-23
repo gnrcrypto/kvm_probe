@@ -94,21 +94,24 @@ struct hypercall_args {
     unsigned long arg3;
 };
 
-#define IOCTL_READ_PORT         0x1001
-#define IOCTL_WRITE_PORT        0x1002
-#define IOCTL_READ_MMIO         0x1003
-#define IOCTL_WRITE_MMIO        0x1004
-#define IOCTL_ALLOC_VQ_PAGE     0x1005
-#define IOCTL_FREE_VQ_PAGE      0x1006
-#define IOCTL_WRITE_VQ_DESC     0x1007
-#define IOCTL_TRIGGER_HYPERCALL 0x1008
-#define IOCTL_READ_KERNEL_MEM   0x1009
-#define IOCTL_WRITE_KERNEL_MEM  0x100A
+#define IOCTL_READ_PORT          0x1001
+#define IOCTL_WRITE_PORT         0x1002
+#define IOCTL_READ_MMIO          0x1003
+#define IOCTL_WRITE_MMIO         0x1004
+#define IOCTL_ALLOC_VQ_PAGE      0x1005
+#define IOCTL_FREE_VQ_PAGE       0x1006
+#define IOCTL_WRITE_VQ_DESC      0x1007
+#define IOCTL_TRIGGER_HYPERCALL  0x1008
+#define IOCTL_READ_KERNEL_MEM    0x1009
+#define IOCTL_WRITE_KERNEL_MEM   0x100A
 #define IOCTL_PATCH_INSTRUCTIONS 0x100B
-#define IOCTL_READ_FLAG_ADDR    0x100C
-#define IOCTL_WRITE_FLAG_ADDR   0x100D
-#define IOCTL_GET_KASLR_SLIDE   0x100E
-#define IOCTL_VIRT_TO_PHYS      0x100F
+#define IOCTL_READ_FLAG_ADDR     0x100C
+#define IOCTL_WRITE_FLAG_ADDR    0x100D
+#define IOCTL_GET_KASLR_SLIDE    0x100E
+#define IOCTL_VIRT_TO_PHYS       0x100F
+#define IOCTL_SCAN_VA            0x1010
+#define IOCTL_WRITE_VA           0x1011
+#define IOCTL_HYPERCALL_ARGS     0x1012
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("KVM Probe Lab");
@@ -503,6 +506,122 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             break;
         }
 
+        case IOCTL_VIRT_TO_PHYS: {
+            printk(KERN_INFO "%s: IOCTL_VIRT_TO_PHYS called.\n", DRIVER_NAME);
+
+            unsigned long va, pa;
+            if (copy_from_user(&va, (void __user *)arg, sizeof(va)))
+                return -EFAULT;
+            if (!va)
+                return -EINVAL;
+
+            pa = virt_to_phys((void *)va);
+            return copy_to_user((void __user *)arg, &pa, sizeof(pa)) ? -EFAULT : 0;
+        }
+
+        case IOCTL_GET_KASLR_SLIDE: {
+            printk(KERN_INFO "%s: IOCTL_GET_KASLR_SLIDE called.\n", DRIVER_NAME);
+
+            unsigned long slide = 0;
+#if IS_ENABLED(CONFIG_KALLSYMS)
+            {
+                unsigned long stxt = kallsyms_lookup_name("_stext");
+                if (stxt)
+                    slide = stxt - PAGE_OFFSET;
+            }
+#endif
+            return copy_to_user((void __user *)arg, &slide, sizeof(slide)) ? -EFAULT : 0;
+        }
+
+        case IOCTL_WRITE_FLAG_ADDR: {
+            printk(KERN_INFO "%s: IOCTL_WRITE_FLAG_ADDR called.\n", DRIVER_NAME);
+
+            unsigned long val;
+            if (copy_from_user(&val, (void __user *)arg, sizeof(val)))
+                return -EFAULT;
+
+#if IS_ENABLED(CONFIG_KALLSYMS)
+            {
+                unsigned long addr = kallsyms_lookup_name("write_flag");
+                if (!addr)
+                    return -ENOENT;
+
+                *((unsigned long *)addr) = val;
+                return 0;
+            }
+#else
+            return -ENOENT;   /* kallsyms not available */
+#endif
+        }
+
+        case IOCTL_READ_FLAG_ADDR: {
+            printk(KERN_INFO "%s: IOCTL_READ_FLAG_ADDR called.\n", DRIVER_NAME);
+
+#if IS_ENABLED(CONFIG_KALLSYMS)
+            {
+                unsigned long addr = kallsyms_lookup_name("write_flag");
+                if (!addr)
+                    return -ENOENT;
+
+                unsigned long val = *((unsigned long *)addr);
+                return copy_to_user((void __user *)arg, &val, sizeof(val)) ? -EFAULT : 0;
+            }
+#else
+            return -ENOENT;
+#endif
+        }
+
+        case IOCTL_PATCH_INSTRUCTIONS: {
+            printk(KERN_INFO "%s: IOCTL_PATCH_INSTRUCTIONS called.\n", DRIVER_NAME);
+
+            struct patch_req {
+                unsigned long dst_va;
+                unsigned long size;
+                unsigned char __user *user_buf;
+            } req;
+
+            if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
+                return -EFAULT;
+            if (!req.dst_va || !req.size || !req.user_buf || req.size > PAGE_SIZE)
+                return -EINVAL;
+
+            /* temp-buffer & patch */
+            {
+                unsigned char *kbuf = kmalloc(req.size, GFP_KERNEL);
+                int ret;
+
+                if (!kbuf)
+                    return -ENOMEM;
+                if (copy_from_user(kbuf, req.user_buf, req.size)) {
+                    kfree(kbuf);
+                    return -EFAULT;
+                }
+
+                /* make text RW, copy, sync, back to RO */
+                {
+                    unsigned long start = req.dst_va & PAGE_MASK;
+                    unsigned long end   = PAGE_ALIGN(req.dst_va + req.size);
+                    int pages           = (end - start) >> PAGE_SHIFT;
+
+                    if (set_memory_rw(start, pages)) {
+                        kfree(kbuf);
+                        return -EPERM;
+                    }
+                    memcpy((void *)req.dst_va, kbuf, req.size);
+                    smp_wmb();
+#if IS_ENABLED(CONFIG_X86)
+                    sync_core();
+#endif
+                    set_memory_ro(start, pages);
+#if IS_ENABLED(CONFIG_X86)
+                    sync_core();
+#endif
+                }
+                kfree(kbuf);
+                return 0;
+            }
+
+        
         default:
             printk(KERN_ERR "%s: Unknown IOCTL command: 0x%x\n", DRIVER_NAME, cmd);
             return -EINVAL;
