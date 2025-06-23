@@ -9,15 +9,18 @@
 
 #define DEVICE "/dev/kvm_probe_dev"
 
-#define IOCTL_READ_KERNEL_MEM   0x1009
-#define IOCTL_WRITE_KERNEL_MEM  0x100A
-#define IOCTL_READ_PORT         0x1001
-#define IOCTL_WRITE_PORT        0x1002
-#define IOCTL_READ_MMIO         0x1003
-#define IOCTL_WRITE_MMIO        0x1004
-#define IOCTL_TRIGGER_HYPERCALL 0x1008
-#define IOCTL_SCAN_VA           0x1010
-#define IOCTL_WRITE_VA          0x1011
+#define IOCTL_WRITE_PORT        0x1003
+#define IOCTL_READ_MMIO         0x1008
+#define IOCTL_WRITE_MMIO        0x1009
+#define IOCTL_SCAN_VA           0x100A
+#define IOCTL_WRITE_VA          0x100B
+#define IOCTL_SCAN_PA           0x100C  // New command
+// Keep these unchanged
+#define IOCTL_ALLOC_VQ_PAGE     0x1005
+#define IOCTL_FREE_VQ_PAGE      0x1006
+#define IOCTL_WRITE_VQ_DESC     0x1007
+#define IOCTL_TRIGGER_HYPERCALL 0x1010
+#define IOCTL_HYPERCALL_ARGS    0x1012
 
 struct kvm_kernel_mem_rw {
     uint64_t kernel_addr;
