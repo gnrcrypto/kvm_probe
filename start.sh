@@ -39,7 +39,7 @@ apt-get build-dep linux-headers-6.1.0-21-image -y
 sleep 2
 echo "[*] installing any missing packages..."
 apt install -f -y >/dev/null
-apt-get --fix-missing install
+apt-get --fix-broken install
 
 sleep 2
 echo "[*] sorting files and making directories for kvm_prober to work properly..."
