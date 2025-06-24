@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <time.h>
+#include <sys/io.h>  // Added for PIO legacy support
 
 #define DEVICE_PATH "/dev/kvm_probe_dev"
 
@@ -46,14 +47,32 @@ struct kvm_kernel_mem_write {
 
 // VA scan structure
 #define IOCTL_SCAN_VA           0x1010
-#define IOCTL_HYPERCALL_ARGS 0x1012
+#define IOCTL_HYPERCALL_ARGS    0x1012
 struct va_scan_data {
     unsigned long va;
     unsigned long size;
     unsigned char *user_buffer;
 };
 
-// IOCTL commands (updated to match kernel module)
+// New PIO structures
+#define KVM_PROBE_IOCTL_WRITE_PIO_VAL  0x1013
+#define KVM_PROBE_IOCTL_WRITE_PIO_BUF  0x1014
+
+struct kvm_probe_pio_val {
+    uint16_t port;
+    uint8_t  size;
+    uint32_t pad;
+    uint64_t value;
+};
+
+struct kvm_probe_pio_buf {
+    uint16_t port;
+    uint16_t len;
+    uint32_t pad;
+    uint64_t buf_user;
+};
+
+// IOCTL commands
 #define IOCTL_READ_PORT         0x1001
 #define IOCTL_WRITE_PORT        0x1002
 #define IOCTL_READ_MMIO         0x1003
@@ -94,6 +113,9 @@ void print_usage(char *prog_name) {
     fprintf(stderr, "  writeflag <value_hex>\n");
     fprintf(stderr, "  getkaslr\n");
     fprintf(stderr, "  virt2phys <virt_addr_hex>\n");
+    // New commands
+    fprintf(stderr, "  writepio_val <port_hex> <value_hex> <size_bytes (1,2,4)>\n");
+    fprintf(stderr, "  writepio_buf <port_hex> <hex_string_to_write>\n");
 }
 
 unsigned char *hex_string_to_bytes(const char *hex_str, unsigned long *num_bytes) {
@@ -131,11 +153,85 @@ unsigned long get_symbol_address(const char *symbol_name) {
              "nm /tmp/vmlinux | grep ' T %s$' | awk '{print $1}'", symbol_name);
     FILE *fp = popen(command, "r");
     if (!fp) return 0;
-
+    
     unsigned long addr = 0;
     fscanf(fp, "%lx", &addr);
     pclose(fp);
     return addr;
+}
+
+// New PIO helper functions
+static int driver_writepio_val(int fd, uint16_t port, uint64_t val, uint8_t sz) {
+    struct kvm_probe_pio_val req = { .port = port, .size = sz, .value = val };
+    return ioctl(fd, KVM_PROBE_IOCTL_WRITE_PIO_VAL, &req);
+}
+
+static int driver_writepio_buf(int fd, uint16_t port, const uint8_t *buf, uint16_t len) {
+    struct kvm_probe_pio_buf hdr = {
+        .port = port, 
+        .len = len,
+        .buf_user = (uint64_t)(uintptr_t)buf 
+    };
+    return ioctl(fd, KVM_PROBE_IOCTL_WRITE_PIO_BUF, &hdr);
+}
+
+static void legacy_writepio_val(uint16_t port, uint64_t val, uint8_t sz) {
+    if (ioperm(port, sz, 1) != 0) { 
+        perror("ioperm"); 
+        exit(1); 
+    }
+    switch (sz) {
+        case 1: outb((uint8_t) val, port); break;
+        case 2: outw((uint16_t)val, port); break;
+        case 4: outl((uint32_t)val, port); break;
+        default: fprintf(stderr, "invalid size\n"); exit(1);
+    }
+}
+
+static void legacy_writepio_buf(uint16_t port, const uint8_t *buf, uint16_t len) {
+    if (ioperm(port, len, 1) != 0) { 
+        perror("ioperm"); 
+        exit(1); 
+    }
+    outsb(port, buf, len);
+}
+
+static void do_writepio_val(uint16_t port, uint64_t val, uint8_t sz) {
+    int fd = open(DEVICE_PATH, O_RDWR);
+    if (fd >= 0) {
+        if (driver_writepio_val(fd, port, val, sz) == 0) {
+            close(fd);
+            return;
+        }
+        close(fd);
+    }
+    legacy_writepio_val(port, val, sz);
+}
+
+static void do_writepio_buf(uint16_t port, const char *hex_str) {
+    unsigned long num_bytes = 0;
+    uint8_t *bytes = hex_string_to_bytes(hex_str, &num_bytes);
+    if (!bytes || num_bytes == 0) {
+        fprintf(stderr, "Failed to parse hex string\n");
+        exit(1);
+    }
+    if (num_bytes > 0xFFFF) {
+        fprintf(stderr, "Buffer too large\n");
+        free(bytes);
+        exit(1);
+    }
+    
+    int fd = open(DEVICE_PATH, O_RDWR);
+    if (fd >= 0) {
+        if (driver_writepio_buf(fd, port, bytes, (uint16_t)num_bytes) == 0) {
+            close(fd);
+            free(bytes);
+            return;
+        }
+        close(fd);
+    }
+    legacy_writepio_buf(port, bytes, (uint16_t)num_bytes);
+    free(bytes);
 }
 
 int main(int argc, char *argv[]) {
@@ -143,15 +239,23 @@ int main(int argc, char *argv[]) {
         print_usage(argv[0]);
         return 1;
     }
-    int fd = open(DEVICE_PATH, O_RDWR);
-    if (fd < 0) {
-        perror("Failed to open " DEVICE_PATH ". Is the kernel module loaded?");
-        return 1;
-    }
     char *cmd = argv[1];
-
+    int fd = -1;
+    int is_old_command = 1;
+    
+    // Check if command is one of the new PIO commands
+    if (strcmp(cmd, "writepio_val") == 0 || strcmp(cmd, "writepio_buf") == 0) {
+        is_old_command = 0;
+    } else {
+        fd = open(DEVICE_PATH, O_RDWR);
+        if (fd < 0) {
+            perror("Failed to open " DEVICE_PATH ". Is the kernel module loaded?");
+            return 1;
+        }
+    }
+    
     if (strcmp(cmd, "readport") == 0) {
-        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 4) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         struct port_io_data data;
         data.port = (unsigned short)strtoul(argv[2], NULL, 16);
         data.size = (unsigned int)strtoul(argv[3], NULL, 10);
@@ -159,9 +263,9 @@ int main(int argc, char *argv[]) {
             perror("ioctl READ_PORT failed");
         else
             printf("Port 0x%X (size %u) Value: 0x%X (%u)\n", data.port, data.size, data.value, data.value);
-
+        
     } else if (strcmp(cmd, "writeport") == 0) {
-        if (argc != 5) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 5) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         struct port_io_data data;
         data.port = (unsigned short)strtoul(argv[2], NULL, 16);
         data.value = (unsigned int)strtoul(argv[3], NULL, 16);
@@ -170,9 +274,9 @@ int main(int argc, char *argv[]) {
             perror("ioctl WRITE_PORT failed");
         else
             printf("Wrote 0x%X to port 0x%X (size %u)\n", data.value, data.port, data.size);
-
+        
     } else if (strcmp(cmd, "readmmio_val") == 0) {
-        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 4) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         struct mmio_data data = {0};
         data.phys_addr = strtoul(argv[2], NULL, 16);
         data.value_size = (unsigned int)strtoul(argv[3], NULL, 10);
@@ -181,9 +285,9 @@ int main(int argc, char *argv[]) {
             perror("ioctl READ_MMIO (value) failed");
         else
             printf("MMIO 0x%lX (size %u) Value: 0x%lX (%lu)\n", data.phys_addr, data.value_size, data.single_value, data.single_value);
-
+        
     } else if (strcmp(cmd, "writemmio_val") == 0) {
-        if (argc != 5) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 5) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         struct mmio_data data = {0};
         data.phys_addr = strtoul(argv[2], NULL, 16);
         data.single_value = strtoul(argv[3], NULL, 16);
@@ -193,21 +297,21 @@ int main(int argc, char *argv[]) {
             perror("ioctl WRITE_MMIO (value) failed");
         else
             printf("Wrote 0x%lX to MMIO 0x%lX (size %u)\n", data.single_value, data.phys_addr, data.value_size);
-
+        
     } else if (strcmp(cmd, "readmmio_buf") == 0) {
-        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 4) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         struct mmio_data data = {0};
         data.phys_addr = strtoul(argv[2], NULL, 16);
         data.size = strtoul(argv[3], NULL, 10);
         if (data.size == 0 || data.size > 65536) {
             fprintf(stderr, "Invalid read size for buffer (max 64K).\n");
-            close(fd);
+            if (fd >= 0) close(fd);
             return 1;
         }
         data.user_buffer = (unsigned char*)malloc(data.size);
         if (!data.user_buffer) {
             perror("malloc for read buffer");
-            close(fd);
+            if (fd >= 0) close(fd);
             return 1;
         }
         if (ioctl(fd, IOCTL_READ_MMIO, &data) < 0)
@@ -227,9 +331,9 @@ int main(int argc, char *argv[]) {
             printf("\n");
         }
         free(data.user_buffer);
-
+        
     } else if (strcmp(cmd, "writemmio_buf") == 0) {
-        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 4) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         struct mmio_data data = {0};
         data.phys_addr = strtoul(argv[2], NULL, 16);
         unsigned long num_bytes = 0;
@@ -237,7 +341,7 @@ int main(int argc, char *argv[]) {
         if (!bytes_to_write || num_bytes == 0) {
             fprintf(stderr, "Failed to parse hex string or zero length.\n");
             if (bytes_to_write) free(bytes_to_write);
-            close(fd);
+            if (fd >= 0) close(fd);
             return 1;
         }
         data.user_buffer = bytes_to_write;
@@ -247,20 +351,20 @@ int main(int argc, char *argv[]) {
         else
             printf("Wrote %lu bytes to MMIO 0x%lX from hex string.\n", data.size, data.phys_addr);
         free(bytes_to_write);
-
+        
     } else if (strcmp(cmd, "readkvmem") == 0) {
-        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 4) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         struct kvm_kernel_mem_read req;
         req.kernel_addr = strtoul(argv[2], NULL, 16);
         req.length = strtoul(argv[3], NULL, 10);
         if (req.length == 0 || req.length > 4096) {
             fprintf(stderr, "Invalid read length (1-4096 supported)\n");
-            close(fd); return 1;
+            if (fd >= 0) close(fd); return 1;
         }
         req.user_buf = malloc(req.length);
         if (!req.user_buf) {
             perror("malloc for kernel mem read");
-            close(fd); return 1;
+            if (fd >= 0) close(fd); return 1;
         }
         if (ioctl(fd, IOCTL_READ_KERNEL_MEM, &req) < 0) {
             perror("ioctl IOCTL_READ_KERNEL_MEM failed");
@@ -277,9 +381,9 @@ int main(int argc, char *argv[]) {
             printf("\n");
         }
         free(req.user_buf);
-
+        
     } else if (strcmp(cmd, "writekvmem") == 0) {
-        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 4) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         struct kvm_kernel_mem_write req;
         req.kernel_addr = strtoul(argv[2], NULL, 16);
         unsigned long num_bytes = 0;
@@ -288,16 +392,16 @@ int main(int argc, char *argv[]) {
         if (!req.user_buf || req.length == 0) {
             fprintf(stderr, "Failed to parse hex string.\n");
             if (req.user_buf) free(req.user_buf);
-            close(fd); return 1;
+            if (fd >= 0) close(fd); return 1;
         }
         if (ioctl(fd, IOCTL_WRITE_KERNEL_MEM, &req) < 0)
             perror("ioctl IOCTL_WRITE_KERNEL_MEM failed");
         else
             printf("Wrote %lu bytes to kernel memory 0x%lX.\n", req.length, req.kernel_addr);
         free(req.user_buf);
-
+        
     } else if (strcmp(cmd, "allocvqpage") == 0) {
-        if (argc != 2) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 2) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         unsigned long pfn_returned = 0;
         if (ioctl(fd, IOCTL_ALLOC_VQ_PAGE, &pfn_returned) < 0) {
             perror("ioctl ALLOC_VQ_PAGE failed");
@@ -305,50 +409,50 @@ int main(int argc, char *argv[]) {
             printf("Allocated VQ page. PFN: 0x%lX\n", pfn_returned);
             printf("Guest Physical Address (approx, if PAGE_SIZE=4096): 0x%lX\n", pfn_returned * 0x1000);
         }
-
+        
     } else if (strcmp(cmd, "freevqpage") == 0) {
-        if (argc != 2) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 2) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         if (ioctl(fd, IOCTL_FREE_VQ_PAGE) < 0) {
             perror("ioctl FREE_VQ_PAGE failed");
         } else {
             printf("Sent FREE_VQ_PAGE command.\n");
         }
-
+        
     } else if (strcmp(cmd, "writevqdesc") == 0) {
-        if (argc != 7) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 7) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         struct vq_desc_user_data d_data;
         d_data.index = (unsigned short)strtoul(argv[2], NULL, 10);
         d_data.phys_addr = strtoull(argv[3], NULL, 16);
         d_data.len = (unsigned int)strtoul(argv[4], NULL, 0);
         d_data.flags = (unsigned short)strtoul(argv[5], NULL, 16);
         d_data.next_idx = (unsigned short)strtoul(argv[6], NULL, 10);
-
+        
         fprintf(stderr, "[Prober: Sending WRITE_VQ_DESC for index %hu: GPA=0x%llx, len=%u, flags=0x%hx, next=%hu]\n",
                 d_data.index, d_data.phys_addr, d_data.len, d_data.flags, d_data.next_idx);
-
+        
         if (ioctl(fd, IOCTL_WRITE_VQ_DESC, &d_data) < 0) {
             perror("ioctl IOCTL_WRITE_VQ_DESC failed");
         } else {
             printf("Sent IOCTL_WRITE_VQ_DESC command.\n");
         }
-
+        
     } else if (strcmp(cmd, "trigger_hypercall") == 0) {
-        if (argc != 2) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 2) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         long hypercall_ret = 0;
         if (ioctl(fd, IOCTL_TRIGGER_HYPERCALL, &hypercall_ret) < 0) {
             perror("ioctl IOCTL_TRIGGER_HYPERCALL failed");
         } else {
             printf("Hypercall triggered, return value: %ld\n", hypercall_ret);
         }
-
+        
     } else if (strcmp(cmd, "exploit_delay") == 0) {
-        if (argc != 3) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 3) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         int delay_ns = atoi(argv[2]);
         exploit_delay(delay_ns);
         printf("Delayed for %d nanoseconds.\n", delay_ns);
-
+        
     } else if (strcmp(cmd, "writeva") == 0) {
-        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 4) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         struct va_scan_data req = {0};
         req.va = strtoul(argv[2], NULL, 16);
         unsigned long nbytes = 0;
@@ -357,7 +461,7 @@ int main(int argc, char *argv[]) {
         if (!req.user_buffer || req.size == 0) {
             fprintf(stderr, "Failed to parse hex string for writeva\n");
             if (req.user_buffer) free(req.user_buffer);
-            close(fd);
+            if (fd >= 0) close(fd);
             return 1;
         }
         if (ioctl(fd, IOCTL_PATCH_INSTRUCTIONS, &req) < 0) {
@@ -366,21 +470,21 @@ int main(int argc, char *argv[]) {
             printf("Wrote %lu bytes to VA 0x%lx\n", nbytes, req.va);
         }
         free(req.user_buffer);
-
+        
     } else if (strcmp(cmd, "scanva") == 0) {
-        if (argc != 5) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 5) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         unsigned long start = strtoul(argv[2], NULL, 16);
         unsigned long end = strtoul(argv[3], NULL, 16);
         unsigned long step = strtoul(argv[4], NULL, 10);
         if (step == 0 || step > 4096) {
             fprintf(stderr, "Invalid step size (1-4096 bytes)\n");
-            close(fd);
+            if (fd >= 0) close(fd);
             return 1;
         }
         unsigned char *buf = malloc(step);
         if (!buf) {
             perror("malloc for scanva buffer");
-            close(fd);
+            if (fd >= 0) close(fd);
             return 1;
         }
         for (unsigned long addr = start; addr < end; addr += step) {
@@ -399,21 +503,21 @@ int main(int argc, char *argv[]) {
             }
         }
         free(buf);
-
+        
     } else if (strcmp(cmd, "scanmmio") == 0) {
-        if (argc != 5) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 5) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         unsigned long start = strtoul(argv[2], NULL, 16);
         unsigned long end = strtoul(argv[3], NULL, 16);
         unsigned long step = strtoul(argv[4], NULL, 10);
         if (step == 0 || step > 4096) {
             fprintf(stderr, "Invalid step size (1-4096 bytes)\n");
-            close(fd);
+            if (fd >= 0) close(fd);
             return 1;
         }
         unsigned char *buf = malloc(step);
         if (!buf) {
             perror("malloc for scanmmio buffer");
-            close(fd);
+            if (fd >= 0) close(fd);
             return 1;
         }
         for (unsigned long addr = start; addr < end; addr += step) {
@@ -432,21 +536,21 @@ int main(int argc, char *argv[]) {
             }
         }
         free(buf);
-
+        
     } else if (strcmp(cmd, "scaninstr") == 0) {
-        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 4) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         struct va_scan_data req = {0};
         req.va = strtoul(argv[2], NULL, 16);
         req.size = strtoul(argv[3], NULL, 10);
         if (req.size == 0) {
             fprintf(stderr, "Invalid size for scaninstr (must be >0).\n");
-            close(fd);
+            if (fd >= 0) close(fd);
             return 1;
         }
         req.user_buffer = malloc(req.size);
         if (!req.user_buffer) {
             perror("malloc for scaninstr buffer");
-            close(fd);
+            if (fd >= 0) close(fd);
             return 1;
         }
         if (ioctl(fd, IOCTL_SCAN_VA, &req) < 0) {
@@ -466,9 +570,9 @@ int main(int argc, char *argv[]) {
             printf("\n");
         }
         free(req.user_buffer);
-
+        
     } else if (strcmp(cmd, "patchinstr") == 0) {
-        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 4) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         struct va_scan_data req = {0};
         req.va = strtoul(argv[2], NULL, 16);
         unsigned long nbytes = 0;
@@ -477,7 +581,7 @@ int main(int argc, char *argv[]) {
         if (!req.user_buffer || req.size == 0) {
             fprintf(stderr, "Failed to parse hex string for patchinstr\n");
             if (req.user_buffer) free(req.user_buffer);
-            close(fd);
+            if (fd >= 0) close(fd);
             return 1;
         }
         if (ioctl(fd, IOCTL_PATCH_INSTRUCTIONS, &req) < 0) {
@@ -486,36 +590,36 @@ int main(int argc, char *argv[]) {
             printf("Patched %lu bytes at VA 0x%lx\n", nbytes, req.va);
         }
         free(req.user_buffer);
-
+        
     } else if (strcmp(cmd, "readflag") == 0) {
-        if (argc != 2) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 2) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         unsigned long value;
         if (ioctl(fd, IOCTL_READ_FLAG_ADDR, &value) < 0) {
             perror("ioctl READ_FLAG_ADDR failed");
         } else {
             printf("Flag value: 0x%lx\n", value);
         }
-
+        
     } else if (strcmp(cmd, "writeflag") == 0) {
-        if (argc != 3) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 3) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         unsigned long value = strtoul(argv[2], NULL, 16);
         if (ioctl(fd, IOCTL_WRITE_FLAG_ADDR, &value) < 0) {
             perror("ioctl WRITE_FLAG_ADDR failed");
         } else {
             printf("Wrote 0x%lx to flag address\n", value);
         }
-
+        
     } else if (strcmp(cmd, "getkaslr") == 0) {
-        if (argc != 2) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 2) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         unsigned long slide;
         if (ioctl(fd, IOCTL_GET_KASLR_SLIDE, &slide) < 0) {
             perror("ioctl GET_KASLR_SLIDE failed");
         } else {
             printf("KASLR slide: 0x%lx\n", slide);
         }
-
+        
     } else if (strcmp(cmd, "virt2phys") == 0) {
-        if (argc != 3) { print_usage(argv[0]); close(fd); return 1; }
+        if (argc != 3) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
         unsigned long virt = strtoul(argv[2], NULL, 16);
         unsigned long phys;
         if (ioctl(fd, IOCTL_VIRT_TO_PHYS, &virt) < 0) {
@@ -525,11 +629,28 @@ int main(int argc, char *argv[]) {
             printf("Virtual 0x%lx -> Physical 0x%lx\n",
                    strtoul(argv[2], NULL, 16), phys);
         }
-
+        
+    } else if (strcmp(cmd, "writepio_val") == 0) {
+        if (argc != 5) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
+        uint16_t port = strtoul(argv[2], NULL, 16);
+        uint64_t val = strtoull(argv[3], NULL, 16);
+        uint8_t sz = strtoul(argv[4], NULL, 10);
+        do_writepio_val(port, val, sz);
+        printf("Wrote PIO value 0x%llx to port 0x%hx (size %u)\n", val, port, sz);
+        
+    } else if (strcmp(cmd, "writepio_buf") == 0) {
+        if (argc != 4) { print_usage(argv[0]); if (fd >= 0) close(fd); return 1; }
+        uint16_t port = strtoul(argv[2], NULL, 16);
+        do_writepio_buf(port, argv[3]);
+        printf("Wrote PIO buffer to port 0x%hx\n", port);
+        
     } else {
         fprintf(stderr, "Unknown command: %s\n", cmd);
         print_usage(argv[0]);
     }
-    close(fd);
+    
+    if (fd >= 0) {
+        close(fd);
+    }
     return 0;
 }
