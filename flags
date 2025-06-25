@@ -1,0 +1,22 @@
+### The host runs v6.1.74 and runs on an Intel(R) Xeon(R) Gold 5222 CPU @ 3.80GHz ###
+### The Guest uses a Debian 12.5 (bookworm) running a v6.1.0-21 kernel compiled with the default Debian config ###
+
+
+
+[*] RCE 250k
+# FLAG PATH:
+  Host rce_flag: /root/rce_flag
+
+
+[*] Arbitrary read/write 50k - 100k | Hypercall #100
+# FLAG ADDRESSES:
+  Write flag address: 0xffffffff826279a8    0x64279a8    Value: 0xdeadbeef41424344 
+  Read flag address: 0xffffffff82b5ee10     0x695ee10    Value: 0xunknown
+
+
+[*] Relative memory read/write 10k - 50k | Hypercall #102
+# Trigger KASAN violation
+
+
+[*] DOS 50k | hypercall #103
+# induce a null-ptr-deref KASAN violation
