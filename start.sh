@@ -26,6 +26,8 @@ wget -q https://debian.sipwise.com/debian-security/pool/main/l/linux/linux-heade
 
 ### ===Install with verification===
 sleep 2
+ apt install linux-compiler-gcc-12-x86 linux-kbuild-6.1 -y
+ sleep 2
 echo "[*] Installing necessary headers..."
 dpkg -i *.deb || true
 
