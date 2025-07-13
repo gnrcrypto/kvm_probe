@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -9,6 +10,13 @@
 #include <time.h>
 
 #define DEVICE_PATH "/dev/kvm_probe_dev"
+
+// ADDED: va_scan_data structure declaration
+struct va_scan_data {
+    unsigned long va;
+    unsigned long size;
+    unsigned char *user_buffer;
+};
 
 struct port_io_data {
     unsigned short port;
@@ -42,11 +50,6 @@ struct kvm_kernel_mem_write {
     unsigned long kernel_addr;
     unsigned long length;
     unsigned char *user_buf;
-};
-
-struct va_scan_data {
-    unsigned long va;
-    unsigned long size;
     unsigned char *user_buffer;
 };
 
@@ -435,7 +438,8 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         for (unsigned long addr = start; addr < end; addr += step) {
-            struct va_scan_data req = {0};
+            // FIXED: Removed initializer from struct declaration
+            struct va_scan_data req;
             req.va = addr;
             req.size = step;
             req.user_buffer = buf;
@@ -520,15 +524,21 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(cmd, "bruteforce_kaslr") == 0) {
         if (argc != 2) { print_usage(argv[0]); close(fd); return 1; }
         unsigned long slide = 0;
-        for (u64 addr = 0xffffffff80000000; addr < 0xffffffffc0000000; addr += 0x200000) {
+        for (uint64_t addr = 0xffffffff80000000ULL; addr < 0xffffffffc0000000ULL; addr += 0x200000ULL) {
             struct kvm_kernel_mem_read req = {
                 .kernel_addr = addr,
                 .length = 8,
                 .user_buf = malloc(8)
             };
+            if (!req.user_buf) {
+                perror("malloc for bruteforce");
+                close(fd);
+                return 1;
+            }
             if (ioctl(fd, IOCTL_READ_KERNEL_MEM, &req) == 0) {
                 if (req.user_buf[0] == 0x55 && req.user_buf[1] == 0x48 && req.user_buf[2] == 0x89) {
                     slide = addr - 0xffffffff81000000;
+                    free(req.user_buf);
                     break;
                 }
             }
