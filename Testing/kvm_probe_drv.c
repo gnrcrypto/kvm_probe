@@ -271,15 +271,15 @@ static unsigned long detect_host_kaslr(void) {
         }
     }
 
+    // Updated KASLR detection without deprecated set_fs()
     struct file *kallsyms_file;
     char *buf = NULL;
     loff_t pos = 0;
-    mm_segment_t old_fs = get_fs();
-    set_fs(KERNEL_DS);
-
+    
     kallsyms_file = filp_open("/proc/kallsyms", O_RDONLY, 0);
     if (IS_ERR(kallsyms_file)) {
-        printk(KERN_WARNING "%s: Failed to open /proc/kallsyms\n", DRIVER_NAME);
+        printk(KERN_WARNING "%s: Failed to open /proc/kallsyms: %ld\n", 
+               DRIVER_NAME, PTR_ERR(kallsyms_file));
         goto fallback_timing;
     }
 
@@ -289,17 +289,33 @@ static unsigned long detect_host_kaslr(void) {
         goto fallback_timing;
     }
 
-    while (vfs_read(kallsyms_file, buf, 4096, &pos) > 0) {
-        char *ptr = strstr(buf, "_text");
-        if (ptr) {
-            sscanf(ptr - 19, "%lx", &host_kernel_base);
-            break;
+    ssize_t bytes_read = kernel_read(kallsyms_file, buf, 4096, &pos);
+    if (bytes_read <= 0) {
+        printk(KERN_WARNING "%s: Failed to read /proc/kallsyms\n", DRIVER_NAME);
+        kfree(buf);
+        filp_close(kallsyms_file, NULL);
+        goto fallback_timing;
+    }
+
+    // Null-terminate the buffer for string operations
+    if (bytes_read < 4096) {
+        buf[bytes_read] = '\0';
+    } else {
+        buf[4095] = '\0';
+    }
+
+    char *ptr = strstr(buf, "_text");
+    if (ptr) {
+        // Find start of line
+        char *line_start = ptr;
+        while (line_start > buf && *(line_start-1) != '\n') {
+            line_start--;
         }
+        sscanf(line_start, "%lx", &host_kernel_base);
     }
 
     kfree(buf);
     filp_close(kallsyms_file, NULL);
-    set_fs(old_fs);
 
     if (host_kernel_base) {
         printk(KERN_INFO "%s: Found _text via /proc/kallsyms: 0x%lx\n",
