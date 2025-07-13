@@ -72,35 +72,46 @@ echo "0xdeadbeef41424344"
 
 echo "[*] Checking potential addresses for flags"
 
-sleep 2
-
+# Scanning MMIO regions
+echo "[+] Scanning MMIO region 0x02A27968"
 kvm_prober readmmio_buf 0x02A27968 64
-
 sleep 2
 
-kvm_prober readmmio_buf 0x0275ef50 64                                                    510  kvm_prober readmmio_buf 0x02b5ee10 64
-
+echo "[+] Scanning MMIO region 0x0275ef50"
+kvm_prober readmmio_buf 0x0275ef50 64
 sleep 2
 
+echo "[+] Scanning MMIO region 0x02b5ee10"
+kvm_prober readmmio_buf 0x02b5ee10 64
+sleep 2
+
+echo "[+] Scanning MMIO region 0x026279a8"
 kvm_prober readmmio_buf 0x026279a8 64
-
 sleep 2
 
+echo "[+] Scanning MMIO region 0x64279a8"
 kvm_prober readmmio_buf 0x64279a8 64
-
 sleep 2
 
-kvm_prober readmmio_buf 0x695ee10 64                                                     514  kvm_prober readkvmem 0xffffffff826279a8 64
-
+echo "[+] Scanning MMIO region 0x695ee10"
+kvm_prober readmmio_buf 0x695ee10 64
 sleep 2
 
-kvm_prober readkvmem 0xffffffff82b5ee10 64                                               516  kvm_prober readkvmem 0xffffffff82A27968 64
-
+# Scanning kernel memory
+echo "[+] Scanning kernel memory 0xffffffff826279a8"
+kvm_prober readkvmem 0xffffffff826279a8 64
 sleep 2
 
+echo "[+] Scanning kernel memory 0xffffffff82b5ee10"
+kvm_prober readkvmem 0xffffffff82b5ee10 64
+sleep 2
+
+echo "[+] Scanning kernel memory 0xffffffff82A27968"
+kvm_prober readkvmem 0xffffffff82A27968 64
+sleep 2
+
+echo "[+] Scanning kernel memory 0xffffffff8275ef50"
 kvm_prober readkvmem 0xffffffff8275ef50 64
-
-sleep 2
 
 echo "check for anything with deadbeef in it possibly reversed or things like dcba"
 
