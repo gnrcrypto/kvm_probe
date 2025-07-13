@@ -9,15 +9,15 @@ apt install sudo make xxd gdb build-essential binutils tar -y >/dev/null || true
 apt install -f -y >/dev/null
 
 sleep 2
-if [ ! -f "/root/vmlinux" ]; then
-    echo "[*] Downloading latest kvmctf bundle for vmlinux..."
-    wget -q https://storage.googleapis.com/kvmctf/latest.tar.gz
-    tar -xzf latest.tar.gz
-    mv /root/kvmctf-6.1.74/vmlinux/vmlinux /root
-    echo "[+] vmlinux moved to /root"
-else
-    echo "[+] /root/vmlinux already exists, skipping download."
-fi
+# if [ ! -f "/root/vmlinux" ]; then
+#     echo "[*] Downloading latest kvmctf bundle for vmlinux..."
+#     wget -q https://storage.googleapis.com/kvmctf/latest.tar.gz
+#     tar -xzf latest.tar.gz
+#     mv /root/kvmctf-6.1.74/vmlinux/vmlinux /root
+#     echo "[+] vmlinux moved to /root"
+# else
+#     echo "[+] /root/vmlinux already exists, skipping download."
+# fi
 
 sleep 2
 echo "[*] downloading necessary headers..."
@@ -45,14 +45,14 @@ apt-get --fix-broken install
 
 sleep 2
 echo "[*] sorting files and making directories for kvm_prober to work properly..."
-mkdir /tmp/kvm_probe
-mv kvm_prober.c /tmp/kvm_probe
-mv kvm_probe_drv.c /tmp/kvm_probe
-mv Makefile /tmp/kvm_probe
+mkdir ~/build/kvm_probe
+mv kvm_prober.c ~/build/kvm_probe
+mv kvm_probe_drv.c ~/build/kvm_probe
+mv Makefile ~/build/kvm_probe
 
 sleep 2
 echo "[*] compiling kvm_probe_drv.c and kvm_prober.c..."
-cd /tmp/kvm_probe
+cd ~/build/kvm_probe
 make
 insmod *.ko
 cp kvm_prober /usr/bin
@@ -71,22 +71,39 @@ echo "[*] Write flags default value"
 echo "0xdeadbeef41424344"
 
 echo "[*] Checking potential addresses for flags"
+
 sleep 2
+
 kvm_prober readmmio_buf 0x02A27968 64
+
 sleep 2
+
 kvm_prober readmmio_buf 0x0275ef50 64                                                    510  kvm_prober readmmio_buf 0x02b5ee10 64
+
 sleep 2
+
 kvm_prober readmmio_buf 0x026279a8 64
+
 sleep 2
+
 kvm_prober readmmio_buf 0x64279a8 64
+
 sleep 2
+
 kvm_prober readmmio_buf 0x695ee10 64                                                     514  kvm_prober readkvmem 0xffffffff826279a8 64
+
 sleep 2
+
 kvm_prober readkvmem 0xffffffff82b5ee10 64                                               516  kvm_prober readkvmem 0xffffffff82A27968 64
+
 sleep 2
+
 kvm_prober readkvmem 0xffffffff8275ef50 64
+
 sleep 2
+
 echo "check for anything with deadbeef in it possibly reversed or things like dcba"
+
 sleep 5
 
 sleep 2
