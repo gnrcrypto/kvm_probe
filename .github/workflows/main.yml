@@ -61,4 +61,4 @@ jobs:
       if: ${{ failure() }}
       run: |
         dmesg > dmesg.log
-        cp /var/log/syslog* .
+        cat dmesg.log
