@@ -1,0 +1,70 @@
+name: Kernel Module CI
+
+on: [push, pull_request]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+      options: --privileged  # Required for kernel module operations
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup environment
+      run: |
+        # Install dependencies
+        apt-get update
+        apt-get install -y --no-install-recommends \
+          build-essential \
+          libelf-dev \
+          kmod \
+          linux-headers-$(uname -r) \
+          git \
+          qemu-system-x86 \
+          gcc-aarch64-linux-gnu \
+          libc6-dev-arm64-cross
+
+        # Verify kernel headers
+        if [ ! -d "/lib/modules/$(uname -r)/build" ]; then
+          echo "❌ Kernel headers not found for $(uname -r)"
+          exit 1
+        fi
+
+    - name: Build module
+      run: |
+        make -C /lib/modules/$(uname -r)/build M=$PWD modules
+        ls -lh *.ko
+
+    - name: Run smoke tests
+      run: |
+        # Simple module load/unload test
+        insmod your_module.ko
+        dmesg | grep "your_module:"
+        rmmod your_module.ko
+        
+        # Verify error logs are captured
+        if dmesg | grep -q "your_module:.*ERR"; then
+          echo "❌ Error logs detected in dmesg"
+          exit 1
+        fi
+
+    - name: Cross-compile for ARM64
+      run: |
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          -C /lib/modules/$(uname -r)/build M=$PWD modules
+        file your_module.ko
+
+    - name: Archive debug artifacts
+      if: ${{ failure() }}
+      run: |
+        dmesg > dmesg.log
+        cp /var/log/syslog* .
+      uses: actions/upload-artifact@v3
+      with:
+        name: debug-logs
+        path: |
+          *.log
+          *.ko
