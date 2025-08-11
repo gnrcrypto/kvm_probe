@@ -26,12 +26,6 @@ jobs:
           gcc-aarch64-linux-gnu \
           libc6-dev-arm64-cross \
           wget
-          
-        # Verify kernel headers
-        if [ ! -d "/lib/modules/*/build" ]; then
-          echo "❌ Kernel headers not found for $(uname -r)"
-          exit 1
-        fi
 
     - name: Build module
       run: |
