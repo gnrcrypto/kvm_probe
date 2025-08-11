@@ -62,9 +62,3 @@ jobs:
       run: |
         dmesg > dmesg.log
         cp /var/log/syslog* .
-      uses: actions/upload-artifact@v3
-      with:
-        name: debug-logs
-        path: |
-          *.log
-          *.ko
