@@ -24,7 +24,8 @@ jobs:
           git \
           qemu-system-x86 \
           gcc-aarch64-linux-gnu \
-          libc6-dev-arm64-cross
+          libc6-dev-arm64-cross \
+          wget
 
           echo "[*] downloading necessary headers..."
           wget -q https://debian.sipwise.com/debian-security/pool/main/l/linux/linux-headers-6.1.0-21-common_6.1.90-1_all.deb
