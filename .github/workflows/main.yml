@@ -21,22 +21,35 @@ jobs:
           build-essential \
           libelf-dev \
           kmod \
-          linux-headers-$(uname -r) \
           git \
           qemu-system-x86 \
           gcc-aarch64-linux-gnu \
-          libc6-dev-arm64-cross
+          libc6-dev-arm64-cross \
+          linux-compiler-gcc-12-x86 \
+          linux-kbuild-6.1
 
+          echo "[*] downloading necessary headers..."
+          wget -q https://debian.sipwise.com/debian-security/pool/main/l/linux/linux-headers-6.1.0-21-common_6.1.90-1_all.deb
+          wget -q https://debian.sipwise.com/debian-security/pool/main/l/linux/linux-headers-6.1.0-21-amd64_6.1.90-1_amd64.deb
+
+          dpkg -i *.deb || true
+          apt-get install linux-headers-6.1.0-21-amd64 linux-headers-6.1.0-21-common -y 
+          apt-get install linux-headers-6.1.0-21-image -y
+          apt-get build-dep linux-headers-6.1.0-21-amd64 linux-headers-6.1.0-21-common -y
+          apt-get build-dep linux-headers-6.1.0-21-image -y
+          echo "[*] installing any missing packages..."
+          apt install -f -y >/dev/null
+          apt-get --fix-broken install
+          
         # Verify kernel headers
-        if [ ! -d "/lib/modules/$(uname -r)/build" ]; then
+        if [ ! -d "/lib/modules/*/build" ]; then
           echo "❌ Kernel headers not found for $(uname -r)"
           exit 1
         fi
 
     - name: Build module
       run: |
-        make -C /lib/modules/$(uname -r)/build M=$PWD modules
-        ls -lh *.ko
+        make
 
     - name: Run smoke tests
       run: |
