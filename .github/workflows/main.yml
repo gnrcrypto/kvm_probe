@@ -42,8 +42,8 @@ jobs:
       run: |
         # Simple module load/unload test
         insmod your_module.ko
-        dmesg | grep "your_module:"
-        rmmod your_module.ko
+        dmesg | grep "kvm_probe_drv:"
+        rmmod kvm_probe_drv.ko
         
         # Verify error logs are captured
         if dmesg | grep -q "your_module:.*ERR"; then
